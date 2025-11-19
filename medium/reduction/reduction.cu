@@ -19,21 +19,38 @@
 所以我们要加volatile，表示这里禁止把smem优化成寄存器缓存，使每次读写都触及真正的shared memory
 */
 
+/*
+为了满足精度要求，得用double
+*/
+
 #include <cuda_runtime.h>
 
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
 #define STRIDE_FACTOR 8
-#define BLOCK_SIZE THREADS_PER_BLOCK *STRIDE_FACTOR
+#define BLOCK_SIZE (THREADS_PER_BLOCK*STRIDE_FACTOR)
 
-__global__ void reduction_kernel(const float *input, float *output, int N)
+__device__ double atomicAddDouble(double *address, double val)
 {
-    __shared__ float smem[THREADS_PER_BLOCK];
+    unsigned long long int *address_as_ull = reinterpret_cast<unsigned long long int *>(address);
+    unsigned long long int old = *address_as_ull, assumed;
+    do
+    {
+        assumed = old;
+        double updated = __longlong_as_double(assumed) + val;
+        old = atomicCAS(address_as_ull, assumed, __double_as_longlong(updated));
+    } while (assumed != old);
+    return __longlong_as_double(old);
+}
+
+__global__ void reduction_kernel(const float *input, double *output, int N)
+{
+    __shared__ double smem[THREADS_PER_BLOCK];
 
     int tid = threadIdx.x;
     int start = blockIdx.x * BLOCK_SIZE;
 
-    float sum = 0.;
+    double sum = 0.;
     for (int i = 0; i < STRIDE_FACTOR; ++i)
     {
         int idx = start + i * THREADS_PER_BLOCK + tid;
@@ -53,7 +70,7 @@ __global__ void reduction_kernel(const float *input, float *output, int N)
 
     if (tid < WARP_SIZE)
     {
-        volatile float *vsmem = smem;
+        volatile double *vsmem = smem;
         vsmem[tid] += vsmem[tid + 32];
         vsmem[tid] += vsmem[tid + 16];
         vsmem[tid] += vsmem[tid + 8];
@@ -64,8 +81,14 @@ __global__ void reduction_kernel(const float *input, float *output, int N)
 
     if (tid == 0)
     {
-        atomicAdd(output, smem[0]);
+        atomicAddDouble(output, smem[0]);
     }
+}
+
+__global__ void finalize_kernel(const double *input, float *output)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+        output[0] = static_cast<float>(*input);
 }
 
 extern "C" void solve(const float *input, float *output, int N)
@@ -73,5 +96,12 @@ extern "C" void solve(const float *input, float *output, int N)
     dim3 threads(THREADS_PER_BLOCK);
     dim3 blocks((N + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
-    reduction_kernel<<<blocks, threads>>>(input, output, N);
+    double *accum = nullptr;
+    cudaMalloc(&accum, sizeof(double));
+    cudaMemset(accum, 0, sizeof(double));
+
+    reduction_kernel<<<blocks, threads>>>(input, accum, N);
+    finalize_kernel<<<1, 1>>>(accum, output);
+
+    cudaFree(accum);
 }
