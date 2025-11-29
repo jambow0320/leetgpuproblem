@@ -1,0 +1,27 @@
+cmake_minimum_required(VERSION 3.18)
+project(kernel_profiling LANGUAGES CXX CUDA)
+
+find_package(CUDAToolkit REQUIRED)
+
+set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+function(add_cuda_example target source)
+    add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE CUDA::cudart CUDA::cublas)
+    target_compile_options(${target} PRIVATE -lineinfo)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
+    endif()
+endfunction()
+
+add_cuda_example(transpose transpose.cu)
+add_cuda_example(combined_access combined_access.cu)
+add_cuda_example(my_transpose_v1_naive my_transpose_v1_naive.cu)
+add_cuda_example(my_transpose_v2_float4 my_transpose_v2_float4.cu)
+add_cuda_example(my_transpose_v3_float2 my_transpose_v3_float2.cu)
+add_cuda_example(my_transpose_v4_float2_1x2 my_transpose_v4_float2_1x2.cu)
+add_cuda_example(my_transpose my_transpose.cu)
+add_cuda_example(roofline_model roofline_model.cu)
+add_cuda_example(my_transpose_v5_shared_memory my_transpose_v5_shared_memory.cu)
+add_cuda_example(my_transpose_v6_no_bank_conflict my_transpose_v6_no_bank_conflict.cu)
